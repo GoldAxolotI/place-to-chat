@@ -391,9 +391,15 @@
 
             ui.btnJoinRoom.disabled = true;
             ui.btnJoinRoom.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Connecting...';
+            
+            // Clean up any existing peer before trying again
+            if (state.peer) {
+                state.peer.destroy();
+            }
 
             // Initialize PeerJS without a specific ID (client doesn't need one)
             state.peer = new Peer();
+            let connectionTimeout; // Timer to prevent infinite spinning
 
             state.peer.on('open', () => {
                 const hostId = code + APP_NAMESPACE;
@@ -401,7 +407,18 @@
                 // Connect to the Host
                 state.hostConnection = state.peer.connect(hostId, { reliable: true });
                 
+                // Start a 10-second timeout in case WebRTC negotiation fails silently
+                connectionTimeout = setTimeout(() => {
+                    if (!state.isHost && (!state.hostConnection || !state.hostConnection.open)) {
+                        ui.btnJoinRoom.disabled = false;
+                        ui.btnJoinRoom.innerHTML = '<span>Join</span>';
+                        showToast("Connection timed out. Host might be offline or blocked by a firewall.", "error");
+                        if (state.peer) state.peer.destroy();
+                    }
+                }, 10000); 
+
                 state.hostConnection.on('open', () => {
+                    clearTimeout(connectionTimeout); // Success! Stop the timeout timer
                     state.isHost = false;
                     state.roomCode = code;
                     
@@ -414,7 +431,7 @@
                     state.hostConnection.send({ type: 'join', username: state.username });
                     
                     ui.btnJoinRoom.disabled = false;
-                    ui.btnJoinRoom.innerHTML = 'Join';
+                    ui.btnJoinRoom.innerHTML = '<span>Join</span>';
                 });
 
                 state.hostConnection.on('data', (data) => {
@@ -435,15 +452,22 @@
                 });
                 
                 state.hostConnection.on('error', (err) => {
+                    clearTimeout(connectionTimeout);
                     showToast("Connection failed.", "error");
                     handleLeaveRoom();
                 });
             });
 
             state.peer.on('error', (err) => {
+                clearTimeout(connectionTimeout);
                 ui.btnJoinRoom.disabled = false;
-                ui.btnJoinRoom.innerHTML = 'Join';
-                showToast("Could not find a room with that code.", "error");
+                ui.btnJoinRoom.innerHTML = '<span>Join</span>';
+                
+                if (err.type === 'peer-unavailable') {
+                    showToast("Room not found. Make sure the code is correct and the host is active.", "error");
+                } else {
+                    showToast("Connection error: " + err.message, "error");
+                }
                 console.error(err);
             });
         }
@@ -573,6 +597,12 @@
             state.hostConnection = null;
             state.isLocalMode = false;
             lastSenderId = null;
+            
+            // Reset button states in case they were stuck loading
+            ui.btnJoinRoom.disabled = false;
+            ui.btnJoinRoom.innerHTML = '<span>Join</span>';
+            ui.btnCreateRoom.disabled = false;
+            ui.btnCreateRoom.innerHTML = '<span>Start Hosting</span>';
             
             setStatus('Disconnected', 'bg-gray-400');
             switchView('lobby');
